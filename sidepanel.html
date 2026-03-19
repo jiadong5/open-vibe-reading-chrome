@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Open Vibe Reading</title>
+    <link rel="stylesheet" href="sidepanel.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="topbar">
+        <div class="topline">
+          <h1>Open Vibe Reading</h1>
+          <div class="top-actions">
+            <button id="newSession" class="ghost" type="button">新会话</button>
+            <button id="openSessions" class="ghost" type="button">Past Conversations</button>
+          </div>
+        </div>
+        <nav class="tabs">
+          <button class="tab active" data-tab="chatPanel" type="button">Chat</button>
+          <button class="tab" data-tab="annotationPanel" type="button">标注</button>
+          <button class="tab" data-tab="settingsPanel" type="button">配置</button>
+        </nav>
+      </header>
+
+      <section id="chatPanel" class="panel active card">
+        <h2>AI Chat</h2>
+        <div id="activeSessionName" class="hint">当前会话: 默认会话</div>
+        <div class="selection-row">
+          <div id="selectionPreview" class="selection-preview">当前未检测到选中文本</div>
+          <button id="syncSelection" class="ghost" type="button">同步选区</button>
+        </div>
+        <div id="chatMessages" class="chat-messages"></div>
+        <textarea id="question" rows="3" placeholder="基于当前网页与标注提问"></textarea>
+        <div class="chat-tools">
+          <button id="quickReadBtn" class="ghost" type="button">一键速读</button>
+          <button id="webSearchBtn" class="ghost" type="button">网页搜索</button>
+          <button id="codeSearchBtn" class="ghost" type="button">代码查询</button>
+          <button id="scholarVersionBtn" class="ghost" type="button">Scholar版本</button>
+          <button id="annotateFromChatBtn" class="ghost" type="button">回答标注到选区</button>
+        </div>
+        <div class="ask-row">
+          <button id="askBtn" type="button">发送提问</button>
+          <button id="stopBtn" class="ghost" type="button" disabled>停止生成</button>
+        </div>
+      </section>
+
+      <section id="annotationPanel" class="panel card">
+        <h2>标注笔记</h2>
+        <p class="hint">在网页选中文本后会自动弹出便签输入框，保存后即高亮。</p>
+        <div class="row one">
+          <button id="refreshAnnotations" type="button">刷新标注列表</button>
+          <button id="clearAnnotations" class="ghost danger" type="button">一键清理全部</button>
+        </div>
+        <ul id="annotationList" class="annotation-list"></ul>
+      </section>
+
+      <section id="settingsPanel" class="panel card">
+        <h2>模型配置</h2>
+        <label>API Key<input id="apiKey" type="password" placeholder="sk-..." /></label>
+        <label>Base URL<input id="baseUrl" type="text" placeholder="https://api.openai.com/v1" /></label>
+        <label>Chat Model<input id="model" type="text" placeholder="gpt-4o-mini" /></label>
+        <label>Summary Model<input id="summaryModel" type="text" placeholder="留空则使用 Chat Model" /></label>
+        <label>Chatbot Name<input id="chatbotName" type="text" placeholder="Assistant" /></label>
+        <label>章节摘要长度（字）<input id="sectionSummaryLength" type="number" min="80" max="1200" step="20" placeholder="220" /></label>
+        <label class="check-option"><input id="preloadSectionSummaries" type="checkbox" />进入 arXiv 文章后预加载章节摘要</label>
+        <label class="check-option"><input id="preloadFormulaExplanations" type="checkbox" />进入 arXiv 文章后预加载公式讲解</label>
+        <p class="hint warn-hint">提示：开启全文预加载后，页面初次解析时间会明显变长，并可能在解析期间影响交互流畅度（滚动、点击响应等）。</p>
+        <button id="saveSettings" type="button">保存配置</button>
+        <p id="saveStatus" class="status"></p>
+
+        <div class="storage-box">
+          <h3>本地存储管理</h3>
+          <p class="hint">存储位置: <code id="storageLocation">chrome.storage.local</code></p>
+          <label>每个会话最大消息数<input id="maxSessionMessages" type="number" min="20" step="10" /></label>
+          <label>按天清理（清理早于该天数的数据）<input id="cleanupDays" type="number" min="1" step="1" /></label>
+          <div class="button-row">
+            <button id="saveStoragePolicy" type="button">保存存储策略</button>
+            <button id="cleanupByDays" class="ghost" type="button">按天清理</button>
+            <button id="clearAllCache" class="ghost danger" type="button">一键清空历史</button>
+          </div>
+          <p id="storageStatus" class="status"></p>
+        </div>
+      </section>
+
+      <aside id="sessionDrawer" class="session-drawer hidden">
+        <div class="drawer-head">
+          <h3>Past Conversations</h3>
+          <button id="closeSessions" class="ghost" type="button">关闭</button>
+        </div>
+        <ul id="sessionList" class="session-list"></ul>
+      </aside>
+    </main>
+
+    <script src="vendor/katex.min.js"></script>
+    <script src="sidepanel.js"></script>
+  </body>
+</html>
