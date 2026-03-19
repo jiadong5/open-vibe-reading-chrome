@@ -45,6 +45,12 @@
 - 标注与会话仅保存在本地浏览器存储。
 - 项目不内置任何固定密钥或远程跟踪脚本。
 
+## Feature Demo
+
+![Feature Demo 1](./img/feature-demo-1.png)
+
+![Feature Demo 2](./img/feature-demo-2.png)
+
 ## 开源发布（GitHub）
 
 ```bash
