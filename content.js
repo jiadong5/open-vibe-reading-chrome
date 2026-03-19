@@ -22,6 +22,7 @@ const sectionSummaryInFlight = new Map();
 const formulaSummaryInFlight = new Map();
 const sectionSummaryPopupMap = new Map();
 const formulaSummaryPopupMap = new Map();
+let annotationDetailPopup = null;
 let runtimeContextInvalid = false;
 
 function summaryErrorKey(prefix, idx) {
@@ -997,21 +998,27 @@ function installAnnotationHoverPreview() {
     if (!(target instanceof HTMLElement)) return;
     const span = target.closest(`span.${HIGHLIGHT_CLASS}`);
     if (!(span instanceof HTMLElement)) return;
-    // Keep annotation details as a single popup to avoid repeated stacked windows.
-    document.querySelectorAll(`.${ARXIV_INFO_POPUP_CLASS}`).forEach((el) => el.remove());
     const annotationId = String(span.dataset.annotationId || "");
     const quote = span.dataset.annotationQuote || span.textContent || "";
     const buildBody = () => {
       const noteNow = span.dataset.annotationNote || "";
       return `**原文**\n${quote || "(无)"}\n\n**笔记**\n${noteNow || "(无笔记)"}`;
     };
-    showArxivInfoPopup("标注详情", buildBody(), event.clientX, event.clientY, {
+    if (!(annotationDetailPopup instanceof HTMLElement) || !document.body.contains(annotationDetailPopup)) {
+      annotationDetailPopup = null;
+    }
+    const popup = showArxivInfoPopup("标注详情", buildBody(), event.clientX, event.clientY, {
+      multi: true,
+      popup: annotationDetailPopup || undefined,
       jumpTarget: span,
       jumpText: "定位标注",
       actions: [
         { id: "edit-note", label: "修改笔记" },
         { id: "delete-annotation", label: "删除标注", kind: "danger" }
       ],
+      onClose: () => {
+        annotationDetailPopup = null;
+      },
       onAction: async (actionId, popup, actionBtn) => {
         if (!(popup instanceof HTMLElement)) return;
         if (!annotationId) throw new Error("标注ID缺失");
@@ -1040,6 +1047,7 @@ function installAnnotationHoverPreview() {
         }
       }
     });
+    if (popup instanceof HTMLElement) annotationDetailPopup = popup;
   });
 }
 
