@@ -68,8 +68,6 @@
 4. 本地存储策略配置（会话上限、按天清理、一键清空）。
 5. 输入交互：`Enter` 发送、`Shift+Enter` 换行。
 
-## 开源发布（GitHub）
-
 ## 许可证
 
 MIT，见 [LICENSE](./LICENSE)。
