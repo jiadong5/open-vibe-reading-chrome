@@ -64,25 +64,11 @@
 
 1. 回答文本自动链接原文锚点（含 `Section`、`Appendix`、`Figure`、`Table`、`[ref]`）。
 2. arXiv hash 解析定位（如 `#S3`、`#S3.F2`）。
-3. Past Conversations 会话管理与本地缓存。
+3. Past Conversations 会话管理与本地缓存：支持跨网页对话。
 4. 本地存储策略配置（会话上限、按天清理、一键清空）。
 5. 输入交互：`Enter` 发送、`Shift+Enter` 换行。
 
 ## 开源发布（GitHub）
-
-```bash
-cd /Users/jiadong5/Desktop/open-vibe-reading/web-vibe-reading-extension
-
-# 首次初始化（如未初始化）
-git init
-git add .
-git commit -m "chore: open-source release"
-
-# 替换为你刚创建的 GitHub 仓库地址
-git branch -M main
-git remote add origin https://github.com/<your_name>/open-vibe-reading-extension.git
-git push -u origin main
-```
 
 ## 许可证
 
