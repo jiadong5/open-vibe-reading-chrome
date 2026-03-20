@@ -1429,7 +1429,7 @@ async function cleanupStorageByDays() {
 }
 
 async function clearAllStorageCache() {
-  const ok = window.confirm("确认清空全部对话、向量记忆和当前缓存吗？此操作不可恢复。");
+  const ok = window.confirm("确认深度清空全部对话、向量记忆、网页标注与章节/公式缓存吗？此操作不可恢复。");
   if (!ok) return;
 
   const now = Date.now();
@@ -1452,9 +1452,23 @@ async function clearAllStorageCache() {
     [STORAGE_ACTIVE_SESSION_KEY]: activeSessionId,
     [STORAGE_VECTOR_KEY]: vectorDb
   });
+
+  // Deep cleanup for page-level caches to avoid reusing old section/formula summaries.
+  const all = await chrome.storage.local.get(null);
+  const deepPrefixes = [
+    "arxiv_summaries::",
+    "annotations::",
+    "ovr_sidebar_pos_v1::"
+  ];
+  const deepExactKeys = ["ovr_arxiv_sidebar_collapsed_v1"];
+  const removeKeys = Object.keys(all).filter((k) => deepExactKeys.includes(k) || deepPrefixes.some((p) => k.startsWith(p)));
+  if (removeKeys.length) {
+    await chrome.storage.local.remove(removeKeys);
+  }
+
   renderSessionList();
   renderCurrentSessionMessages();
-  updateStorageStatus("已清空历史对话与缓存");
+  updateStorageStatus(`已深度清空历史记录与缓存（附加清理键 ${removeKeys.length} 个）`);
 }
 
 async function getActiveTab() {
