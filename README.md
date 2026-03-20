@@ -29,8 +29,7 @@
 1. 打开 Chrome：`chrome://extensions/`
 2. 开启“开发者模式”
 3. 点击“加载已解压的扩展程序”
-4. 选择目录：
-   - `open-vibe-reading/web-vibe-reading-extension`
+4. 直接选择加载整个repo
 
 ## 配置
 
@@ -39,7 +38,7 @@
 - API Key
 - Base URL（默认 `https://api.openai.com/v1`）
 - Chat Model（默认 `gpt-4o-mini`）
-- Summary Model（可与 Chat Model 不同）
+- Summary Model（可与 Chat Model 不同，空置就会回滚Chat Model，分开设置有助于提高交互流畅度。）
 
 ## 数据与隐私
 
