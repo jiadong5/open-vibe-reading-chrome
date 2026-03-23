@@ -3,9 +3,13 @@ const STORAGE_SESSIONS_KEY = "chat_sessions_v1";
 const STORAGE_ACTIVE_SESSION_KEY = "chat_active_session_v1";
 const STORAGE_VECTOR_KEY = "local_vector_db_v1";
 const STORAGE_POLICY_KEY = "local_storage_policy_v1";
+const STORAGE_PDF_ANNOTATION_PREFIX = "pdf_annotations::";
+const STORAGE_PDF_SUMMARY_PREFIX = "pdf_summaries::";
 
 const MAX_SESSION_MESSAGES = 200;
 const VECTOR_SIM_THRESHOLD = 0.22;
+const PDF_PAGE_LIMIT = 40;
+const PDF_TEXT_CHAR_LIMIT = 180000;
 
 const els = {
   tabs: Array.from(document.querySelectorAll(".tab")),
@@ -30,6 +34,7 @@ const els = {
   askBtn: document.getElementById("askBtn"),
   stopBtn: document.getElementById("stopBtn"),
   quickReadBtn: document.getElementById("quickReadBtn"),
+  pdfSectionSummaryBtn: document.getElementById("pdfSectionSummaryBtn"),
   webSearchBtn: document.getElementById("webSearchBtn"),
   codeSearchBtn: document.getElementById("codeSearchBtn"),
   scholarVersionBtn: document.getElementById("scholarVersionBtn"),
@@ -57,6 +62,8 @@ let latestSelectionText = "";
 let assistantDisplayName = "ASSISTANT";
 let currentAbortController = null;
 let currentPendingNode = null;
+let pdfWorkerConfigured = false;
+let latestPageContext = null;
 let latestPageAnchorContext = {
   pageUrl: "",
   sections: [],
@@ -1458,6 +1465,8 @@ async function clearAllStorageCache() {
   const deepPrefixes = [
     "arxiv_summaries::",
     "annotations::",
+    "pdf_annotations::",
+    "pdf_summaries::",
     "ovr_sidebar_pos_v1::"
   ];
   const deepExactKeys = ["ovr_arxiv_sidebar_collapsed_v1"];
@@ -1542,7 +1551,17 @@ async function annotateSelectionWithLatestAnswer() {
   const latestAnswer = getLatestAssistantMessage();
   if (!latestAnswer) throw new Error("当前会话还没有可用的 AI 回答。");
 
+  const tab = await getActiveTab();
   const note = `【Chatbot 相关内容】\n${latestAnswer.slice(0, 4000)}`;
+  if (isPdfTab(tab)) {
+    const quote = String(latestSelectionText || "").trim() || String(latestAnswer || "").split(/\r?\n/)[0].slice(0, 300);
+    if (!quote) throw new Error("PDF 模式未检测到可用于标注的引用文本。请先复制选区并点击“同步选区”。");
+    await addPdfAnnotationForActiveTab(quote, note);
+    await refreshAnnotations();
+    appendMessage("system", "已在 PDF 模式写入标注。", true);
+    return;
+  }
+
   const res = await sendToContentScript("ADD_ANNOTATION_FROM_SELECTION", { note });
   if (!res?.ok) throw new Error(res?.error || "写入标注失败");
   if (res?.data?.selection) {
@@ -1555,6 +1574,214 @@ async function annotateSelectionWithLatestAnswer() {
 
 function isSupportedPage(url) {
   return !!url && /^https?:/i.test(url);
+}
+
+function shortHash(text) {
+  const s = String(text || "");
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i += 1) {
+    h ^= s.charCodeAt(i);
+    h += (h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24);
+  }
+  return (h >>> 0).toString(16);
+}
+
+function safeDecodeURIComponent(input) {
+  let out = String(input || "");
+  for (let i = 0; i < 2; i += 1) {
+    try {
+      const next = decodeURIComponent(out);
+      if (next === out) break;
+      out = next;
+    } catch (_) {
+      break;
+    }
+  }
+  return out;
+}
+
+function resolvePdfSourceUrl(tabUrl) {
+  const raw = String(tabUrl || "").trim();
+  if (!raw) return "";
+  if (/^https?:\/\/.*\.pdf(?:$|[?#])/i.test(raw) || /arxiv\.org\/pdf\//i.test(raw)) {
+    return raw;
+  }
+  try {
+    const u = new URL(raw);
+    const host = String(u.hostname || "").toLowerCase();
+    const isChromePdfViewerHost =
+      host === "mhjfbmdgcfjbbpaeojofohoefgiehjai" ||
+      host === "jfbnmfgkohlfclfnplnlenbalpppohkm";
+    if (!isChromePdfViewerHost) return "";
+    const src = u.searchParams.get("src") || u.searchParams.get("file") || "";
+    const decoded = safeDecodeURIComponent(src);
+    if (/^https?:\/\//i.test(decoded)) return decoded;
+    return "";
+  } catch (_) {
+    return "";
+  }
+}
+
+function isPdfTab(tab) {
+  const url = String(tab?.url || "");
+  return !!resolvePdfSourceUrl(url);
+}
+
+function getPdfAnnotationsKey(pdfUrl) {
+  return `${STORAGE_PDF_ANNOTATION_PREFIX}${shortHash(pdfUrl)}`;
+}
+function getPdfSummariesKey(pdfUrl) {
+  return `${STORAGE_PDF_SUMMARY_PREFIX}${shortHash(pdfUrl)}`;
+}
+
+async function loadPdfAnnotations(pdfUrl) {
+  const key = getPdfAnnotationsKey(pdfUrl);
+  const data = await chrome.storage.local.get(key);
+  const list = data?.[key];
+  return Array.isArray(list) ? list : [];
+}
+
+async function savePdfAnnotations(pdfUrl, annotations) {
+  const key = getPdfAnnotationsKey(pdfUrl);
+  await chrome.storage.local.set({ [key]: Array.isArray(annotations) ? annotations : [] });
+}
+
+async function listPdfAnnotationsForActiveTab() {
+  const tab = await getActiveTab();
+  const pdfUrl = resolvePdfSourceUrl(tab?.url || "");
+  if (!pdfUrl) throw new Error("当前不是 PDF 页面。");
+  return loadPdfAnnotations(pdfUrl);
+}
+
+async function addPdfAnnotationForActiveTab(quote, note) {
+  const tab = await getActiveTab();
+  const pdfUrl = resolvePdfSourceUrl(tab?.url || "");
+  if (!pdfUrl) throw new Error("当前不是 PDF 页面。");
+  const list = await loadPdfAnnotations(pdfUrl);
+  list.unshift({
+    id: uid("pdf_ann"),
+    quote: String(quote || "").trim(),
+    note: String(note || "").trim(),
+    createdAt: Date.now()
+  });
+  await savePdfAnnotations(pdfUrl, list.slice(0, 500));
+}
+
+async function deletePdfAnnotationForActiveTab(id) {
+  const tab = await getActiveTab();
+  const pdfUrl = resolvePdfSourceUrl(tab?.url || "");
+  if (!pdfUrl) throw new Error("当前不是 PDF 页面。");
+  const list = await loadPdfAnnotations(pdfUrl);
+  const next = list.filter((x) => String(x?.id || "") !== String(id || ""));
+  await savePdfAnnotations(pdfUrl, next);
+}
+
+async function clearPdfAnnotationsForActiveTab() {
+  const tab = await getActiveTab();
+  const pdfUrl = resolvePdfSourceUrl(tab?.url || "");
+  if (!pdfUrl) throw new Error("当前不是 PDF 页面。");
+  await savePdfAnnotations(pdfUrl, []);
+}
+
+function normalizePdfText(text) {
+  return String(text || "")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+}
+
+async function ensurePdfJsReady() {
+  if (!window.pdfjsLib) {
+    throw new Error("PDF 解析库未加载，请重载插件后重试。");
+  }
+  if (!pdfWorkerConfigured) {
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL("vendor/pdf.worker.min.js");
+    pdfWorkerConfigured = true;
+  }
+}
+
+async function readPdfContextFromTab(tab, signal) {
+  const pdfUrl = resolvePdfSourceUrl(tab?.url || "");
+  if (!pdfUrl) throw new Error("未识别到可读取的 PDF 地址。");
+  await ensurePdfJsReady();
+
+  const resp = await fetch(pdfUrl, { method: "GET", signal, credentials: "include", cache: "no-store" });
+  if (!resp.ok) {
+    throw new Error(`PDF 下载失败: ${resp.status}`);
+  }
+  const bytes = await resp.arrayBuffer();
+  const loadingTask = window.pdfjsLib.getDocument({ data: bytes });
+  const onAbort = () => {
+    try {
+      loadingTask.destroy();
+    } catch (_) {
+      // Ignore destroy error on cancellation.
+    }
+  };
+  if (signal) signal.addEventListener("abort", onAbort, { once: true });
+  try {
+    const pdf = await loadingTask.promise;
+    const pageLimit = Math.min(Number(pdf.numPages) || 0, PDF_PAGE_LIMIT);
+    const chunks = [];
+    for (let i = 1; i <= pageLimit; i += 1) {
+      if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+      const page = await pdf.getPage(i);
+      const content = await page.getTextContent();
+      let lineY = null;
+      let line = [];
+      const lines = [];
+      for (const item of content.items || []) {
+        const str = String(item?.str || "").trim();
+        if (!str) continue;
+        const y = Array.isArray(item?.transform) ? Number(item.transform[5]) : null;
+        if (lineY !== null && Number.isFinite(y) && Math.abs(y - lineY) > 2.2) {
+          if (line.length) lines.push(line.join(" ").trim());
+          line = [str];
+          lineY = y;
+        } else {
+          line.push(str);
+          if (lineY === null && Number.isFinite(y)) lineY = y;
+        }
+      }
+      if (line.length) lines.push(line.join(" ").trim());
+      if (lines.length) {
+        chunks.push(`\n[第 ${i} 页]\n${lines.join("\n")}`);
+      }
+      if (chunks.join("\n").length > PDF_TEXT_CHAR_LIMIT) break;
+    }
+    await pdf.destroy();
+    const text = normalizePdfText(chunks.join("\n").slice(0, PDF_TEXT_CHAR_LIMIT));
+    if (!text) throw new Error("PDF 内容为空或无法提取文本。");
+    const title = String(tab?.title || "PDF 文档")
+      .replace(/\s*-\s*PDF Viewer.*$/i, "")
+      .replace(/\.pdf$/i, "")
+      .trim();
+    const annotations = await loadPdfAnnotations(pdfUrl);
+    return {
+      title: title || "PDF 文档",
+      url: pdfUrl,
+      text,
+      latestSelection: "",
+      annotations,
+      anchors: { sections: [], references: [], figures: [], tables: [] },
+      isPdfMode: true
+    };
+  } finally {
+    if (signal) signal.removeEventListener("abort", onAbort);
+  }
+}
+
+async function getPageContext(signal) {
+  const tab = await getActiveTab();
+  if (isPdfTab(tab)) {
+    const data = await readPdfContextFromTab(tab, signal);
+    latestPageContext = data;
+    return { ok: true, data };
+  }
+  const res = await sendToContentScript("GET_PAGE_CONTEXT");
+  if (res?.ok) latestPageContext = res.data || null;
+  return res;
 }
 
 async function sendToContentScript(type, payload = {}) {
@@ -1621,6 +1848,20 @@ function renderAnnotations(annotations) {
 }
 
 async function syncSelection() {
+  const tab = await getActiveTab();
+  if (isPdfTab(tab)) {
+    let clip = "";
+    try {
+      clip = String(await navigator.clipboard.readText()).trim();
+    } catch (_) {
+      // Ignore clipboard read errors.
+    }
+    latestSelectionText = clip.slice(0, 2000);
+    els.selectionPreview.textContent = latestSelectionText
+      ? latestSelectionText
+      : "PDF 模式：请先在文档中复制选中文本，再点击同步选区";
+    return;
+  }
   const result = await sendToContentScript("GET_SELECTION");
   if (!result?.ok) throw new Error(result?.error || "读取选区失败");
   latestSelectionText = result.data.selection || "";
@@ -1628,17 +1869,36 @@ async function syncSelection() {
 }
 
 async function refreshAnnotations() {
+  const tab = await getActiveTab();
+  if (isPdfTab(tab)) {
+    const list = await listPdfAnnotationsForActiveTab();
+    renderAnnotations(list);
+    return;
+  }
   const result = await sendToContentScript("LIST_ANNOTATIONS");
   if (!result?.ok) throw new Error(result?.error || "读取标注失败");
   renderAnnotations(result.data.annotations || []);
 }
 
 async function clearAllAnnotations() {
+  const tab = await getActiveTab();
+  if (isPdfTab(tab)) {
+    await clearPdfAnnotationsForActiveTab();
+    return;
+  }
   const result = await sendToContentScript("CLEAR_ANNOTATIONS");
   if (!result?.ok) throw new Error(result?.error || "清理失败");
 }
 
 async function locateAnnotationFromSidebar(id) {
+  const tab = await getActiveTab();
+  if (isPdfTab(tab)) {
+    const anns = await listPdfAnnotationsForActiveTab();
+    const ann = anns.find((x) => String(x?.id || "") === String(id || ""));
+    if (!ann?.quote) throw new Error("未找到该标注对应原文。");
+    els.selectionPreview.textContent = `PDF 标注定位（复制片段后请用页面搜索）: ${String(ann.quote).slice(0, 200)}`;
+    return;
+  }
   const res = await sendToContentScript("LOCATE_ANNOTATION", { id });
   if (!res?.ok) throw new Error(res?.error || "定位失败");
 }
@@ -1860,6 +2120,109 @@ async function requestModelCompletion(settings, systemPrompt, userPrompt, signal
   throw new Error(`API 调用失败，已尝试多个端点:\n${errors.join("\n")}`);
 }
 
+async function requestModelCompletionWithModel(settings, modelName, systemPrompt, userPrompt, signal) {
+  const merged = { ...settings, model: String(modelName || settings.model || "").trim() || settings.model };
+  return requestModelCompletion(merged, systemPrompt, userPrompt, signal);
+}
+
+function extractPdfSections(text, maxSections = 16) {
+  const lines = String(text || "")
+    .split(/\r?\n/)
+    .map((x) => x.trim())
+    .filter(Boolean);
+  const headingRe =
+    /^(?:[IVXLCM]+(?:-[A-Z])?|\d+(?:\.\d+){0,2})\s+[A-Za-z\u4e00-\u9fa5][A-Za-z0-9\u4e00-\u9fa5 ,.:;'"()\-]{2,}$/;
+  const namedRe = /^(?:Abstract|Introduction|Related Work|Method|Methods|Experiment|Experiments|Conclusion|Appendix.*)$/i;
+  const sections = [];
+  let curr = null;
+  for (const line of lines) {
+    if (headingRe.test(line) || namedRe.test(line)) {
+      if (curr?.text?.trim()) sections.push(curr);
+      curr = { title: line, text: "" };
+      if (sections.length >= maxSections) break;
+      continue;
+    }
+    if (!curr) curr = { title: "全文开头", text: "" };
+    curr.text += `${line}\n`;
+  }
+  if (curr?.text?.trim()) sections.push(curr);
+  if (!sections.length) {
+    sections.push({ title: "全文概要", text: String(text || "").slice(0, 18000) });
+  }
+  return sections.slice(0, maxSections).map((s) => ({
+    title: String(s.title || "未命名章节").slice(0, 120),
+    text: String(s.text || "").slice(0, 22000)
+  }));
+}
+
+async function getPdfSectionSummaries(force = false, signal) {
+  const settings = await getSettings();
+  if (!settings.apiKey) throw new Error("请先在配置页填写 API Key");
+  const contextRes = await getPageContext(signal);
+  if (!contextRes?.ok) throw new Error(contextRes?.error || "无法读取 PDF 内容");
+  const page = contextRes.data || {};
+  if (!page.isPdfMode) throw new Error("当前页面不是 PDF 模式。");
+
+  const key = getPdfSummariesKey(page.url || "");
+  if (!force) {
+    const cache = await chrome.storage.local.get(key);
+    const cached = cache?.[key];
+    if (cached?.markdown) return { markdown: String(cached.markdown), page };
+  }
+
+  const sections = extractPdfSections(page.text || "");
+  const targetLen = normalizePositiveInt(settings.sectionSummaryLength, 220, 80, 1200);
+  const systemPrompt =
+    "你是论文阅读助手。请仅基于输入的 PDF 章节文本，输出中文章节摘要。要求准确、具体，不要编造，不要保底套话。输出 Markdown。";
+  const chunks = [];
+  for (const [idx, sec] of sections.entries()) {
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+    const userPrompt = [
+      `标题: ${page.title || "PDF 文档"}`,
+      `URL: ${page.url || ""}`,
+      `章节: ${sec.title}`,
+      `输出长度: 约 ${targetLen} 字`,
+      "",
+      "请输出：",
+      `### ${idx + 1}. ${sec.title}`,
+      "随后给出该章节详细摘要（中文，含关键方法/结论/证据）。",
+      "",
+      "章节原文（可能截断）：",
+      sec.text
+    ].join("\n");
+    const one = await requestModelCompletionWithModel(
+      settings,
+      settings.summaryModel || settings.model,
+      systemPrompt,
+      userPrompt,
+      signal
+    );
+    chunks.push(String(one || "").trim());
+  }
+
+  const markdown = chunks.filter(Boolean).join("\n\n");
+  if (!markdown.trim()) throw new Error("未生成有效章节摘要。");
+  await chrome.storage.local.set({
+    [key]: {
+      ts: Date.now(),
+      title: page.title || "",
+      url: page.url || "",
+      markdown
+    }
+  });
+  return { markdown, page };
+}
+
+function togglePdfModeUi(isPdfMode) {
+  const isPdf = !!isPdfMode;
+  if (els.pdfSectionSummaryBtn) {
+    els.pdfSectionSummaryBtn.style.display = isPdf ? "inline-flex" : "none";
+  }
+  if (els.selectionPreview && isPdf && !String(latestSelectionText || "").trim()) {
+    els.selectionPreview.textContent = "PDF 模式：请先在文档中复制选中文本，再点击同步选区";
+  }
+}
+
 async function getEmbedding(text, settings) {
   const t = String(text || "").trim();
   if (!t) return null;
@@ -1972,10 +2335,11 @@ async function askModel(question, signal) {
   const settings = await getSettings();
   if (!settings.apiKey) throw new Error("请先在配置页填写 API Key");
 
-  const contextRes = await sendToContentScript("GET_PAGE_CONTEXT");
+  const contextRes = await getPageContext(signal);
   if (!contextRes?.ok) throw new Error(contextRes?.error || "无法读取网页内容");
 
   const page = contextRes.data;
+  togglePdfModeUi(!!page?.isPdfMode);
   updatePageAnchorContext(page);
   if (page.latestSelection) {
     latestSelectionText = page.latestSelection;
@@ -2022,9 +2386,10 @@ async function quickReadCurrentPage(signal) {
   const settings = await getSettings();
   if (!settings.apiKey) throw new Error("请先在配置页填写 API Key");
 
-  const contextRes = await sendToContentScript("GET_PAGE_CONTEXT");
+  const contextRes = await getPageContext(signal);
   if (!contextRes?.ok) throw new Error(contextRes?.error || "无法读取网页内容");
   const page = contextRes.data;
+  togglePdfModeUi(!!page?.isPdfMode);
   updatePageAnchorContext(page);
   const pageType = detectReadingPageType(page);
 
@@ -2155,10 +2520,15 @@ function wireUiEvents() {
       if (!id) return;
       const ok = window.confirm("确认删除这条标注吗？");
       if (!ok) return;
-      const res = await sendToContentScript("DELETE_ANNOTATION", { id });
-      if (!res?.ok) {
-        appendMessage("system", res?.error || "删除失败");
-        return;
+      const tab = await getActiveTab();
+      if (isPdfTab(tab)) {
+        await deletePdfAnnotationForActiveTab(id);
+      } else {
+        const res = await sendToContentScript("DELETE_ANNOTATION", { id });
+        if (!res?.ok) {
+          appendMessage("system", res?.error || "删除失败");
+          return;
+        }
       }
       await refreshAnnotations();
       return;
@@ -2325,6 +2695,27 @@ function wireUiEvents() {
     }
   });
 
+  els.pdfSectionSummaryBtn?.addEventListener("click", async () => {
+    if (els.askBtn?.disabled) return;
+    const pendingNode = appendPendingAssistantMessage("正在生成 PDF 章节摘要");
+    currentPendingNode = pendingNode;
+    currentAbortController = new AbortController();
+    setAskBusy(true);
+    try {
+      const result = await getPdfSectionSummaries(false, currentAbortController.signal);
+      removePendingAssistantMessage(pendingNode);
+      appendMessage("assistant", `## PDF 章节摘要\n\n${result.markdown}`, true);
+      await renameActiveSessionIfNeeded(`PDF章节摘要 ${result.page?.title || ""}`.trim(), result.page);
+    } catch (err) {
+      removePendingAssistantMessage(pendingNode);
+      if (!isAbortError(err)) appendMessage("system", String(err.message || err), true);
+    } finally {
+      currentPendingNode = null;
+      currentAbortController = null;
+      setAskBusy(false);
+    }
+  });
+
   els.stopBtn?.addEventListener("click", () => {
     if (!currentAbortController) return;
     currentAbortController.abort("manual_stop");
@@ -2398,10 +2789,21 @@ async function init() {
   updateStorageStatus("");
 
   try {
-    const pageRes = await sendToContentScript("GET_PAGE_CONTEXT");
-    if (pageRes?.ok) updatePageAnchorContext(pageRes.data || {});
-    await syncSelection();
-    await refreshAnnotations();
+    const pageRes = await getPageContext();
+    if (pageRes?.ok) {
+      updatePageAnchorContext(pageRes.data || {});
+      togglePdfModeUi(!!pageRes?.data?.isPdfMode);
+    }
+    if (pageRes?.data?.isPdfMode) {
+      latestSelectionText = "";
+      if (els.selectionPreview) {
+        els.selectionPreview.textContent = "PDF 模式：请先在文档中复制选中文本，再点击同步选区";
+      }
+      await refreshAnnotations();
+    } else {
+      await syncSelection();
+      await refreshAnnotations();
+    }
     renderCurrentSessionMessages();
   } catch (err) {
     appendMessage("system", String(err.message || err), false);
